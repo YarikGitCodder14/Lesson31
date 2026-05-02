@@ -1,218 +1,138 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[codz]
-*$py.class
+import telebot # Импорт библиотеки телеграм-бота
+import schedule # Импорт библиотеки для создания расписания
+import time # Импорт библиотеки для синхронизации с часовым поясом
+from threading import Thread # Библиотека для проверки времени
+from telebot import types # Библиотека для создания клавиатуры с кнопками
 
-# C extensions
-*.so
+API_TOKEN = '[ДАННЫЕ УДАЛЕНЫ]' # Токен бота
+bot = telebot.TeleBot(API_TOKEN)
 
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
+# Словарь для хранения напоминаний по chat_id
+reminders = {}
 
-# PyInstaller
-#   Usually these files are written by a python script from a template
-#   before PyInstaller builds the exe, so as to inject date/other infos into it.
-*.manifest
-*.spec
+# Проверка корректности времени по формату "ЧЧ:ММ"
+def is_valid_time(time_str):
+    if len(time_str) != 5 or time_str[2] != ':':
+        return False # Возвращение значения, если формат времени неверный
+    try:
+        hours, minutes = time_str.split(':')
+        hours = int(hours)
+        minutes = int(minutes)
+        return 0 <= hours <= 23 and 0 <= minutes <= 59
+    except ValueError:
+        return False # Возвращение значения, если часы больше 24 или меньше 0 и если минуты больше 59 и меньше 0 соответственно
 
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
+# Отправка напоминания пользователю и удаление задачи из расписания.
+def send_reminder(chat_id, text, job_id):
+    bot.send_message(chat_id, f'Вам пришло напоминание: {text}')
+    # Удаление задачи из бота
+    schedule.cancel_job(job_id)
+    # Очищение отправленных напоминаний из бота
+    if chat_id in reminders:
+        reminders[chat_id] = [r for r in reminders[chat_id] if r['text'] != text]
 
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py.cover
-.hypothesis/
-.pytest_cache/
-cover/
+# Добавление напоминания в расписание
+def schedule_reminder(chat_id, text, reminder_time):
+    if chat_id not in reminders:
+        reminders[chat_id] = []
+    reminders[chat_id].append({'text': text, 'time': reminder_time})
 
-# Translations
-*.mo
-*.pot
+    # Настройка расписания
+    job = schedule.every().day.at(reminder_time).do(
+        send_reminder, chat_id, text, schedule.default_scheduler.jobs[-1]
+    )
+    bot.send_message(chat_id, f'Созданное Вами напоминание установлено на {reminder_time}.')
 
-# Django stuff:
-*.log
-local_settings.py
-db.sqlite3
-db.sqlite3-journal
+# Удаление напоминания
+def remove_reminder(chat_id, reminder_time):
+    if chat_id in reminders:
+        # Удаление напоминание из бота
+        reminders[chat_id] = [r for r in reminders[chat_id] if r['time'] != reminder_time]
+        # Нахождение и удаление напоминания из бота (если оно есть)
+        for job in schedule.default_scheduler.jobs:
+            if job.next_run.strftime('%H:%M') == reminder_time:
+                schedule.cancel_job(job)
+        bot.send_message(chat_id, f'Созданное Вами напоминание на {reminder_time} было успешно удалено.')
+    # Если пользователь не создавал напоминаний
+    else:
+        bot.send_message(chat_id, 'Ваших напоминаний не найдено.')
 
-# Flask stuff:
-instance/
-.webassets-cache
+# Если пользователь запустил бота, он может выбрать 3 действия по соответствующим кнопкам
+@bot.message_handler(commands=['start'])
+def start(message):
+    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    button1 = types.KeyboardButton('Создать напоминание')
+    button2 = types.KeyboardButton('Посмотреть расписание')
+    button3 = types.KeyboardButton('Удалить напоминание')
+    keyboard.add(button1, button2, button3)
+    bot.send_message(message.chat.id, 'Приветствую вас. Я - бот, который поможет Вам создать собственное расписание из напоминаний по конкретному времени. Выберите одно из трёх действий (если вы впервые пользуйтесь мною, то выберите "Создать напоминание") и мы приступим к работе:', reply_markup=keyboard)
 
-# Scrapy stuff:
-.scrapy
+# Если пользователь принял решение создать напоминание (расписание)
+@bot.message_handler(func=lambda message: message.text == 'Создать напоминание')
+def set_reminder(message):
+    try:
+        msg = bot.send_message(message.chat.id, 'Сперва-наперво, введите время вашего напоминания в формате "ЧЧ:ММ" (к примеру "12:00" без кавычек):')
+        bot.register_next_step_handler(msg, get_time)
+    except Exception as e:
+        bot.reply_to(message, f'Возникла ошибка: {e}')
 
-# Sphinx documentation
-docs/_build/
+def get_time(message):
+    reminder_time = message.text.strip()
+    # Проверка формата времени
+    if not is_valid_time(reminder_time):
+        bot.send_message(
+            message.chat.id,
+            'Введённый Вами формат времени неверный. Используйте временной формат "ЧЧ:ММ" (например "12:00" без кавычек).'
+        )
+        return
+    msg = bot.send_message(message.chat.id, 'Теперь, введите задачу, которую я мог бы вам напомнить в это время (например "Помыть посуду" без кавычек):') # Если пользователь верно ввёл формат, то он может задать напоминание для себя
+    bot.register_next_step_handler(msg, get_text, reminder_time)
 
-# PyBuilder
-.pybuilder/
-target/
+def get_text(message, reminder_time):
+    reminder_text = message.text
+    chat_id = message.chat.id
+    schedule_reminder(chat_id, reminder_text, reminder_time)
+    bot.send_message(chat_id, 'Напоминание успешно создано (посмотреть своё напоминание можно в расписании).')
 
-# Jupyter Notebook
-.ipynb_checkpoints
+# Если пользователь решил просмотреть расписание
+@bot.message_handler(func=lambda message: message.text == 'Посмотреть расписание')
+def show_schedule(message):
+    chat_id = message.chat.id
+    if chat_id in reminders and reminders[chat_id]:
+        # Список напоминаний
+        schedule_list = '\n'.join([f'{r["time"]} — {r["text"]}' for r in reminders[chat_id]])
+        bot.send_message(chat_id, f'Ваше текущее расписание:\n{schedule_list}')
+    # Если пользователь не создал напоминаний или удалил их ранее    
+    else:
+        bot.send_message(chat_id, 'На данный момент, у вас отсутствуют напоминания.')
 
-# IPython
-profile_default/
-ipython_config.py
+# Если пользователь решил удалить созданные им напоминания
+@bot.message_handler(func=lambda message: message.text == 'Удалить напоминание')
+def remove_reminder_step(message):
+    msg = bot.send_message(message.chat.id, 'Введите время напоминания, которое Вы желаете удалить в формате "ЧЧ:ММ" (к примеру "12:00" без кавычек):')
+    bot.register_next_step_handler(msg, remove_reminder_by_time)
 
-# pyenv
-#   For a library or package, you might want to ignore these files since the code is
-#   intended to run in multiple environments; otherwise, check them in:
-# .python-version
+def remove_reminder_by_time(message):
+    reminder_time = message.text.strip()
+    # Проверка верности временного формата
+    if not is_valid_time(reminder_time):
+        bot.send_message(
+            message.chat.id,
+            'Введённый Вами формат времени неверный. Используйте временной формат "ЧЧ:ММ" (например "12:00" без кавычек). Если вы забыли время напоминания, то просмотрите его в расписании.'
+        )
+        return
+    remove_reminder(message.chat.id, reminder_time)
 
-# pipenv
-#   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
-#   However, in case of collaboration, if having platform-specific dependencies or dependencies
-#   having no cross-platform support, pipenv may install dependencies that don't work, or not
-#   install all needed dependencies.
-# Pipfile.lock
+# Проверка и выполнение запланированных напоминаний
+def schedule_checker():
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
 
-# UV
-#   Similar to Pipfile.lock, it is generally recommended to include uv.lock in version control.
-#   This is especially recommended for binary packages to ensure reproducibility, and is more
-#   commonly ignored for libraries.
-# uv.lock
+# Задавание проверки расписания
+def run_schedule():
+    Thread(target=schedule_checker, daemon=True).start()
 
-# poetry
-#   Similar to Pipfile.lock, it is generally recommended to include poetry.lock in version control.
-#   This is especially recommended for binary packages to ensure reproducibility, and is more
-#   commonly ignored for libraries.
-#   https://python-poetry.org/docs/basic-usage/#commit-your-poetrylock-file-to-version-control
-# poetry.lock
-# poetry.toml
-
-# pdm
-#   Similar to Pipfile.lock, it is generally recommended to include pdm.lock in version control.
-#   pdm recommends including project-wide configuration in pdm.toml, but excluding .pdm-python.
-#   https://pdm-project.org/en/latest/usage/project/#working-with-version-control
-# pdm.lock
-# pdm.toml
-.pdm-python
-.pdm-build/
-
-# pixi
-#   Similar to Pipfile.lock, it is generally recommended to include pixi.lock in version control.
-# pixi.lock
-#   Pixi creates a virtual environment in the .pixi directory, just like venv module creates one
-#   in the .venv directory. It is recommended not to include this directory in version control.
-.pixi
-
-# PEP 582; used by e.g. github.com/David-OConnor/pyflow and github.com/pdm-project/pdm
-__pypackages__/
-
-# Celery stuff
-celerybeat-schedule
-celerybeat.pid
-
-# Redis
-*.rdb
-*.aof
-*.pid
-
-# RabbitMQ
-mnesia/
-rabbitmq/
-rabbitmq-data/
-
-# ActiveMQ
-activemq-data/
-
-# SageMath parsed files
-*.sage.py
-
-# Environments
-.env
-.envrc
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
-
-# Spyder project settings
-.spyderproject
-.spyproject
-
-# Rope project settings
-.ropeproject
-
-# mkdocs documentation
-/site
-
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-# Pyre type checker
-.pyre/
-
-# pytype static type analyzer
-.pytype/
-
-# Cython debug symbols
-cython_debug/
-
-# PyCharm
-#   JetBrains specific template is maintained in a separate JetBrains.gitignore that can
-#   be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
-#   and can be added to the global gitignore or merged into this file.  For a more nuclear
-#   option (not recommended) you can uncomment the following to ignore the entire idea folder.
-# .idea/
-
-# Abstra
-#   Abstra is an AI-powered process automation framework.
-#   Ignore directories containing user credentials, local state, and settings.
-#   Learn more at https://abstra.io/docs
-.abstra/
-
-# Visual Studio Code
-#   Visual Studio Code specific template is maintained in a separate VisualStudioCode.gitignore 
-#   that can be found at https://github.com/github/gitignore/blob/main/Global/VisualStudioCode.gitignore
-#   and can be added to the global gitignore or merged into this file. However, if you prefer, 
-#   you could uncomment the following to ignore the entire vscode folder
-# .vscode/
-# Temporary file for partial code execution
-tempCodeRunnerFile.py
-
-# Ruff stuff:
-.ruff_cache/
-
-# PyPI configuration file
-.pypirc
-
-# Marimo
-marimo/_static/
-marimo/_lsp/
-__marimo__/
-
-# Streamlit
-.streamlit/secrets.toml
+# Окончательный запуск проверки расписания и бота
+run_schedule()
+bot.infinity_polling() # Бесконечный цикл ожидания новых сообщений
